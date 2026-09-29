@@ -1,0 +1,6 @@
+build/
+*.class
+# default output name of "java Kotlin2Java file.kt"
+input.java
+# ANTLR jar, when downloaded next to the scripts
+antlr*-complete.jar
