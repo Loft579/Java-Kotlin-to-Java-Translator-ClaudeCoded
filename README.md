@@ -38,6 +38,8 @@ java Kotlin2Java [file].kt  #creates a default [input.java](http://input.java) f
 
 java Kotlin2Java [file].kt [file].java  # creates a file with a specified name
 
+java Kotlin2Java --classpath android.jar [file].kt [file].java  # see "Compiled libraries"
+
 The input can also come from stdin or straight from the command line, in which
 case the Java code is printed to stdout (as class `Main`) unless an output file
 is given:
@@ -251,6 +253,116 @@ command already uses the right name.
 A dependency that is already `.java` cannot be parsed by this grammar, so its
 visible static declarations are read off the source to qualify references, and it
 has to be compiled alongside the output.
+
+## Compiled libraries: imported, with their types read
+
+A library such as the JDK or the Android SDK is not translated at all: `android.*`
+is Java already, and Java calls it as it is. What the translation does need is its
+types. Kotlin infers `val d = LocalDate.now()`, Java has to write `LocalDate d`, and
+that type is nowhere in the Kotlin source. So it is read off the compiled classes,
+by reflection (they are loaded, never initialised: none of their code runs).
+
+The JDK is always available. Anything else is given with `--classpath`, jars or
+directories separated as the platform does it (`:`, or `;` on Windows):
+
+```
+java Kotlin2Java --classpath ~/Android/Sdk/platforms/android-34/android.jar Main.kt Main.java
+```
+
+An import that is not this project's source is kept when it names a class or a
+package of the JDK or of the classpath; otherwise it is dropped with a warning, as
+before. With the classes known:
+
+| Kotlin | Java |
+| --- | --- |
+| `val d = LocalDate.now()` | `final LocalDate d = LocalDate.now();` |
+| `d.year` / `view.isEnabled` | `d.getYear()` / `view.isEnabled()` |
+| `view.text = "hi"` | `view.setText("hi");` |
+| `view.text += "!"` | `view.setText(view.getText() + "!");` |
+| `month.name` / `month.ordinal` (an enum) | `month.name()` / `month.ordinal()` |
+| `Locale.LanguageRange.parse(s)` | the same, typed `List<java.util.Locale.LanguageRange>` |
+
+Kotlin's own rules are followed: a public field wins over a getter of the same
+name, `getURL()` is the property `url`, an `isX()` answering a boolean is the
+property `isX`, and a method of the class wins over a Kotlin extension of the same
+name. A type is written by its simple name only where that name is sure to mean it
+in the generated file; otherwise it is qualified (a `class DayOfWeek` of the file
+makes the library's `java.time.DayOfWeek`).
+
+When a type cannot be known for certain, it is left unknown, which is what the
+translator did before: overloads that fit the arguments and disagree on what they
+return (an exact match of the argument types is taken first, as Java and Kotlin
+do), a type variable (`Map<K, V>.get`), an array. Generic classes other than
+`List<T>`/`Set<T>` are written raw. Two things are refused instead of being guessed:
+
+- assigning a property that has a getter and no setter (Kotlin reads it as a
+  `val`),
+- `+=` and the like on such a property when the receiver is a call, since reading
+  and writing back would run the call twice.
+
+What this does not cover is everything around it: the grammar still rejects most of
+a real Android `Activity` (annotations, `?:`, multi-line lambdas, objects), and the
+Kotlin-specific shapes of a library compiled from Kotlin (`Foo.Companion`, extension
+functions as `FooKt.bar(x)`, default arguments, `suspend`) are not mapped. A class
+the JDK has, such as `java.util.List`, is always read from the JDK, even when the
+classpath is an android.jar whose API level lacks part of it.
+
+# Android
+
+Short version: the Java this tool writes runs on Android, but the tool translates
+Kotlin *logic*, not Android *apps*. Take the translated classes into an Android
+project for calculations, validation, collections, regexes or plain classes; do not
+expect it to translate an `Activity`.
+
+What works:
+
+- The generated Java needs Java 9 at the most (`List.of`), and nothing past it.
+  Lambdas compile for any Android version; `List.of` exists on a device from
+  Android 11 (API 30), and streams from Android 7 (API 24). For an older `minSdk`,
+  check that your build desugars them (`coreLibraryDesugaring`); this has not been
+  tested here.
+- With `--classpath android.jar` the SDK's classes are imported and their types
+  known, so `view.text = "hi"` becomes `view.setText("hi");` (see "Compiled
+  libraries" above). android.jar comes with the SDK platform
+  (`sdkmanager "platforms;android-34"`); Android Studio is not needed for it.
+
+What does not, and why:
+
+- **Most of a real Android source file is rejected by the grammar.** Annotations
+  (`@Composable`, `@Override`...), `?:` and `!!`, `object` and `companion object`,
+  `data class`, `try`/`catch`, lambdas of more than one expression, default and
+  named arguments, extension functions and coroutines are all outside it (see
+  "Limitations"). A typical `Activity`, `Fragment` or `ViewModel` uses several.
+- **The output is a console program.** A file translates to a class whose entry
+  point is `main`, and `println` becomes `System.out`. Android never calls `main`,
+  and `System.out` goes to Logcat, not to the screen.
+- **Libraries compiled from Kotlin are seen as plain Java.** Most of AndroidX and
+  all of Jetpack Compose are Kotlin. Their companion objects (`Foo.Companion.bar()`),
+  extension functions (`FooKt.bar(x)`), default arguments and `suspend` functions
+  are not mapped, and Compose cannot be called from Java at all: it needs the
+  Kotlin compiler plugin.
+- **`java.*` is read from the JDK running the translator**, not from android.jar,
+  so a JDK class or method missing at your `minSdk` (`java.time` before API 26
+  without desugaring, say) is not reported.
+- **Nothing of the Android build is produced**: no Gradle files, no manifest, no
+  resources.
+
+And the question of whether to do this at all: Android supports Kotlin directly,
+and it is the language Google recommends for it. Translating to Java is only
+needed when the code has to live in a Java-only project or toolchain.
+
+# Editor support
+
+`tools/notepad++/` has Kotlin and Gradle support for Notepad++ (syntax highlighting
+and autocompletion), from [bsobol/npp-kotlin-gradle](https://github.com/bsobol/npp-kotlin-gradle)
+under its MIT license, which is kept next to the files.
+
+- Highlighting: Language > Define your language... > Import, pick
+  `userDefinedLang_Kotlin.xml` (or `_Darcula` for a dark theme), restart Notepad++.
+- Autocompletion: copy `Kotlin.xml` into `C:\Program Files\Notepad++\autoCompletion\`
+  (`plugins\APIs\` on versions before 7.6.3), restart Notepad++. With the Darcula
+  definition, rename it `Kotlin_Darcula.xml` first.
+- The Gradle files install the same way.
 
 # Limitations
 
