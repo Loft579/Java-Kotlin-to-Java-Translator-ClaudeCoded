@@ -94,6 +94,150 @@ class Cls {
 	String home;                              // generated class hosting it, null = this file
 }
 
+/* Java classes that the translated code uses but this tool does not translate: the
+   JDK's, and those found in the jars or directories given with --classpath (an
+   android.jar, say). They are read by reflection and never initialised, so nothing of
+   theirs runs; all they answer is what a member is and what it returns. */
+class JavaLibrary {
+	static final JavaLibrary JDK=new JavaLibrary(new ArrayList<File>());
+
+	final ClassLoader loader;
+	/* Classes and packages of the --classpath entries. An import outside java.* is
+	   accepted only when it names one of these or a package of the JDK itself. */
+	final Set<String> classpathClasses=new HashSet<String>();
+	final Set<String> classpathPackages=new HashSet<String>();
+	// a miss is cached too: the same unknown name is asked about on every use
+	final Map<String,Class<?>> found=new HashMap<String,Class<?>>();
+	final Set<String> missing=new HashSet<String>();
+	final Map<Class<?>,List<java.lang.reflect.Method>> methods=
+		new HashMap<Class<?>,List<java.lang.reflect.Method>>();
+	final Map<Class<?>,List<java.lang.reflect.Field>> fields=
+		new HashMap<Class<?>,List<java.lang.reflect.Field>>();
+
+	JavaLibrary(List<File> entries){
+		List<java.net.URL> urls=new ArrayList<java.net.URL>();
+		for(File entry:entries){
+			try{
+				urls.add(entry.toURI().toURL());
+			}catch(java.net.MalformedURLException e){
+				throw new IllegalArgumentException("bad classpath entry "+entry);
+			}
+			index(entry);
+		}
+		/* The platform loader as the parent, not the one running this tool: the user's
+		   jars must not see ANTLR or the translator, and java.* comes from the JDK either
+		   way (no other loader may define it). */
+		loader=new java.net.URLClassLoader(urls.toArray(new java.net.URL[0]),
+			ClassLoader.getPlatformClassLoader());
+	}
+
+	void index(File entry){
+		if(entry.isDirectory()){
+			indexDirectory(entry,"");
+			return;
+		}
+		try(java.util.zip.ZipFile zip=new java.util.zip.ZipFile(entry)){
+			Enumeration<? extends java.util.zip.ZipEntry> all=zip.entries();
+			while(all.hasMoreElements())record(all.nextElement().getName());
+		}catch(IOException e){
+			throw new IllegalArgumentException("cannot read classpath entry "+entry+": "
+				+e.getMessage());
+		}
+	}
+
+	void indexDirectory(File dir,String prefix){
+		File[] list=dir.listFiles();
+		if(list==null)return;
+		for(File f:list){
+			if(f.isDirectory())indexDirectory(f,prefix+f.getName()+"/");
+			else record(prefix+f.getName());
+		}
+	}
+
+	void record(String path){
+		if(!path.endsWith(".class")||path.startsWith("META-INF/"))return;
+		String name=path.substring(0,path.length()-6).replace('/','.');
+		classpathClasses.add(name);
+		int dot=name.lastIndexOf('.');
+		if(dot>0)classpathPackages.add(name.substring(0,dot));
+	}
+
+	/** A public class by the name Java source gives it ('java.util.Map.Entry'), or null. */
+	Class<?> find(String canonical){
+		if(found.containsKey(canonical))return found.get(canonical);
+		if(missing.contains(canonical))return null;
+		Class<?> c=null;
+		/* A nested class is written with dots in source and loaded with '$', and which
+		   dots are which cannot be told from the name, so each split is tried from the
+		   right: 'a.b.C.D' as a.b.C$D, then a.b$C$D (never a package with capitals). */
+		String binary=canonical;
+		while(c==null){
+			c=load(binary);
+			int dot=binary.lastIndexOf('.');
+			if(c!=null||dot<0)break;
+			binary=binary.substring(0,dot)+"$"+binary.substring(dot+1);
+		}
+		if(c!=null&&!java.lang.reflect.Modifier.isPublic(c.getModifiers()))c=null;
+		if(c==null)missing.add(canonical);
+		else found.put(canonical,c);
+		return c;
+	}
+
+	Class<?> load(String binary){
+		try{
+			return Class.forName(binary,false,loader);
+		}catch(ClassNotFoundException|LinkageError|SecurityException e){
+			return null;
+		}
+	}
+
+	/* An on-demand import ('import android.widget.*') has to name a real package;
+	   one that does not would be an import javac rejects. */
+	boolean hasPackage(String pkg){
+		if(classpathPackages.contains(pkg))return true;
+		for(Module m:ModuleLayer.boot().modules())
+			if(m.getPackages().contains(pkg))return true;
+		return false;
+	}
+
+	boolean hasClass(String canonical){
+		return find(canonical)!=null;
+	}
+
+	/* The public methods, inherited ones included. Bridges are left out: a covariant
+	   override leaves one behind with the older return type, and the two would look
+	   like overloads that disagree. An interface lists Object's methods too, as
+	   Kotlin and Java both let them be called on it. */
+	List<java.lang.reflect.Method> methodsOf(Class<?> c){
+		List<java.lang.reflect.Method> list=methods.get(c);
+		if(list!=null)return list;
+		list=new ArrayList<java.lang.reflect.Method>();
+		try{
+			for(java.lang.reflect.Method m:c.getMethods())
+				if(!m.isBridge()&&!m.isSynthetic())list.add(m);
+			if(c.isInterface())list.addAll(Arrays.asList(Object.class.getMethods()));
+		}catch(LinkageError e){
+			// a signature mentions a class missing from the classpath: nothing is known
+			list.clear();
+		}
+		methods.put(c,list);
+		return list;
+	}
+
+	List<java.lang.reflect.Field> fieldsOf(Class<?> c){
+		List<java.lang.reflect.Field> list=fields.get(c);
+		if(list!=null)return list;
+		list=new ArrayList<java.lang.reflect.Field>();
+		try{
+			list.addAll(Arrays.asList(c.getFields()));
+		}catch(LinkageError e){
+			list.clear();
+		}
+		fields.put(c,list);
+		return list;
+	}
+}
+
 class Translator {
 	final String mainClass;
 	final File baseDir;                                        // for resolving imports
@@ -150,6 +294,11 @@ class Translator {
 	   build() has been collected, which may happen further down the file. */
 	final List<KotlinParser.WithassignContext> pendingGlobals=
 		new ArrayList<KotlinParser.WithassignContext>();
+	/* The Java classes the code may use, with what this file imports of them: simple
+	   name -> canonical name for a single import, and the packages imported on demand. */
+	JavaLibrary library=JavaLibrary.JDK;
+	final Map<String,String> importedClasses=new HashMap<String,String>();
+	final List<String> importedPackages=new ArrayList<String>();
 
 	Translator(String mainClass,File baseDir,Set<String> visitedDeps){
 		this(mainClass,baseDir,visitedDeps,new HashMap<String,Translator>());
@@ -169,6 +318,11 @@ class Translator {
 	/** The class behind a possibly qualified type name. */
 	Cls classOf(String type){
 		if(type==null)return null;
+		/* A name qualified by a package ('java.time.Month') is a library class. Cutting
+		   it at the last dot would hand it to a class of this file that happens to share
+		   its simple name -- the very clash the qualification was written to avoid. */
+		if(!type.isEmpty()&&Character.isLowerCase(type.charAt(0))&&type.indexOf('.')>0)
+			return null;
 		int dot=type.lastIndexOf('.');
 		return classes.get(dot<0?type:type.substring(dot+1));
 	}
@@ -474,6 +628,7 @@ class Translator {
 			if(name.equals("kotlin")||name.startsWith("kotlin."))continue;
 			if(name.startsWith("java.")||name.startsWith("javax.")){
 				header.add("import "+name+";");
+				recordImport(name);
 				continue;
 			}
 			File dep=resolveDependency(name);
@@ -481,8 +636,406 @@ class Translator {
 				loadDependency(dep);
 				continue;
 			}
-			warn("import '"+name+"' resolves to no .kt or .java file near the source; dropped");
+			/* Not this project's source, but maybe a compiled library: a class of the JDK
+			   or of the --classpath. Java can call it as it is, so it is imported, not
+			   translated -- android.* is Java already. */
+			boolean onDemand=name.endsWith(".*");
+			if(onDemand?library.hasPackage(name.substring(0,name.length()-2))
+					:library.hasClass(name)){
+				header.add("import "+name+";");
+				recordImport(name);
+				continue;
+			}
+			warn("import '"+name+"' resolves to no .kt or .java file near the source"
+				+(library==JavaLibrary.JDK?"":" nor to a class of the classpath")+"; dropped");
 		}
+	}
+
+	void recordImport(String name){
+		if(name.endsWith(".*")){
+			importedPackages.add(name.substring(0,name.length()-2));
+			return;
+		}
+		importedClasses.put(name.substring(name.lastIndexOf('.')+1),name);
+	}
+
+	// ------------------------------------------------------- Java libraries
+
+	/* Kotlin infers the type of 'val d = LocalDate.now()'; Java has to write it, and a
+	   library's types are not in the Kotlin source. They are read off the compiled
+	   class instead. Every question below answers null when the answer is not certain
+	   -- an overload that cannot be told apart, a type variable, an array -- and null
+	   is what the translator answered before, so an unclear case stays as it was. */
+
+	/* Types the translator already gives a meaning of its own: Kotlin's String and
+	   numbers, its MatchResult and Regex, and Object, whose receivers get a cast to
+	   String. A library must not override any of them. */
+	static final Set<String> TRANSLATOR_TYPES=new HashSet<String>(Arrays.asList(
+		"String","Object","Math","Pattern",MATCH,"void","short","Short"));
+
+	/* The receiver type given to a library class named as a receiver: 'LocalDate' in
+	   'LocalDate.now()' is not a value, and its members are the static ones. The space
+	   keeps it from ever being read as a Java type. */
+	static final String STATIC="static ";
+
+	/** The library class a type of the translated code stands for, or null. */
+	Class<?> libraryClass(String type){
+		if(type==null||type.isEmpty()||type.indexOf('<')>=0||type.endsWith("[]"))return null;
+		if(type.startsWith(STATIC))return library.find(type.substring(STATIC.length()));
+		if(TRANSLATOR_TYPES.contains(type)||BOXED.containsKey(type)||BOXED.containsValue(type))
+			return null;
+		if(classOf(type)!=null)return null;           // a class of this file or of a dependency
+		if(type.indexOf('.')>0)
+			return Character.isLowerCase(type.charAt(0))?library.find(type):null;
+		return visibleClass(type);
+	}
+
+	/* What a simple name means in the generated file: its single import, or else the
+	   one on-demand package that has it. Two of them having it is ambiguous to javac. */
+	Class<?> visibleClass(String simple){
+		String explicit=importedClasses.get(simple);
+		if(explicit!=null)return library.find(explicit);
+		Class<?> only=null;
+		for(String pkg:onDemandPackages()){
+			Class<?> c=library.find(pkg+"."+simple);
+			if(c==null)continue;
+			if(only!=null&&only!=c)return null;
+			only=c;
+		}
+		return only;
+	}
+
+	/* java.util is imported on demand by every generated file, java.lang implicitly.
+	   java.util.regex is left out: it is imported only when a Regex is used. */
+	List<String> onDemandPackages(){
+		List<String> all=new ArrayList<String>();
+		all.add("java.lang");
+		all.add("java.util");
+		all.addAll(importedPackages);
+		return all;
+	}
+
+	/* The receiver type of a name that is not a value but a library class. A local,
+	   a property or a class of this file by that name wins, as it does in Kotlin. */
+	String staticReceiverType(String name){
+		if(name.isEmpty()||!Character.isUpperCase(name.charAt(0)))return null;
+		// Math has rules of its own (kotlin.math), which this must not bypass
+		if(lookup(name)!=null||classes.containsKey(name)||name.equals("Math"))return null;
+		Class<?> c=visibleClass(name);
+		return c==null?null:STATIC+c.getCanonicalName();
+	}
+
+	/** The type of a receiver written as a plain name. */
+	String receiverType(String name){
+		String t=lookup(name);
+		return t!=null?t:staticReceiverType(name);
+	}
+
+	/* How a library type is written in the generated file. A simple name only where it
+	   is certain to mean that class; otherwise the canonical name, which always does. */
+	String libraryTypeName(java.lang.reflect.Type t){
+		if(t instanceof Class){
+			Class<?> c=(Class<?>)t;
+			if(c.isArray())return null;                  // the grammar has no arrays
+			// a short is compared as a reference in the translator, which Java gets wrong
+			if(c==short.class||c==Short.class)return null;
+			if(c.isPrimitive())return c.getName();
+			if(c==String.class)return "String";
+			if(c==Object.class)return "Object";
+			return libraryClassName(c);
+		}
+		if(t instanceof java.lang.reflect.ParameterizedType){
+			java.lang.reflect.ParameterizedType p=(java.lang.reflect.ParameterizedType)t;
+			Class<?> raw=(Class<?>)p.getRawType();
+			/* The translator reads List<T> and Set<T> (their element type is what its
+			   collection rules need). Only java.util's own classes are taken as one: they
+			   are known to pass their one type argument straight on. Anything else is
+			   written raw, with its element type unknown. */
+			String kind=collectionKind(raw);
+			java.lang.reflect.Type[] args=p.getActualTypeArguments();
+			if(kind!=null&&args.length==1){
+				String element=libraryTypeName(upperBound(args[0]));
+				if(element!=null&&!BOXED.containsKey(element))return kind+"<"+element+">";
+			}
+			return libraryClassName(raw);
+		}
+		return null;                                     // a type variable, a wildcard
+	}
+
+	static String collectionKind(Class<?> raw){
+		if(raw.getTypeParameters().length!=1||!raw.getName().startsWith("java.util."))
+			return null;
+		if(List.class.isAssignableFrom(raw))return "List";
+		if(Set.class.isAssignableFrom(raw))return "Set";
+		return null;
+	}
+
+	/* 'List<? extends View>' is what Kotlin sees as List<View>: reading is all it
+	   allows anyway. A lower bound has no such reading. */
+	static java.lang.reflect.Type upperBound(java.lang.reflect.Type t){
+		if(!(t instanceof java.lang.reflect.WildcardType))return t;
+		java.lang.reflect.WildcardType w=(java.lang.reflect.WildcardType)t;
+		if(w.getLowerBounds().length>0||w.getUpperBounds().length!=1)return null;
+		return w.getUpperBounds()[0];
+	}
+
+	String libraryClassName(Class<?> c){
+		String canonical=c.getCanonicalName();
+		if(canonical==null)return null;                  // anonymous or local
+		// a class with no package cannot be imported into a file that has one
+		if(c.getPackageName().isEmpty())return null;
+		if(c.getEnclosingClass()!=null)return canonical;
+		String simple=c.getSimpleName();
+		// a class of this file by that name would take it over
+		if(classes.containsKey(simple)||simple.equals(mainClass))return canonical;
+		return visibleClass(simple)==c?simple:canonical;
+	}
+
+	/* The Java class of a type the translator uses, for matching it against a
+	   parameter. Null when it cannot be told, which matches any parameter. */
+	Class<?> argumentClass(String type){
+		if(type==null)return null;
+		switch(type){
+			case "int": return int.class;
+			case "long": return long.class;
+			case "double": return double.class;
+			case "float": return float.class;
+			case "boolean": return boolean.class;
+			case "byte": return byte.class;
+			case "char": return char.class;
+			case "String": return String.class;
+			case "Object": return Object.class;
+			case "Pattern": return java.util.regex.Pattern.class;
+			default: break;
+		}
+		if(MATCH.equals(type)||type.startsWith("List<"))return List.class;
+		if(type.startsWith("Set<"))return Set.class;
+		String primitive=primitiveOf(type);                // Integer -> int, and so on
+		if(!primitive.equals(type)){
+			Class<?> p=argumentClass(primitive);
+			return p==null?null:boxedClass(p);
+		}
+		return libraryClass(type);
+	}
+
+	static Class<?> boxedClass(Class<?> c){
+		if(!c.isPrimitive())return c;
+		if(c==int.class)return Integer.class;
+		if(c==long.class)return Long.class;
+		if(c==double.class)return Double.class;
+		if(c==float.class)return Float.class;
+		if(c==boolean.class)return Boolean.class;
+		if(c==byte.class)return Byte.class;
+		if(c==char.class)return Character.class;
+		if(c==short.class)return Short.class;
+		return Void.class;
+	}
+
+	static Class<?> unboxedClass(Class<?> c){
+		if(c.isPrimitive())return c;
+		if(c==Integer.class)return int.class;
+		if(c==Long.class)return long.class;
+		if(c==Double.class)return double.class;
+		if(c==Float.class)return float.class;
+		if(c==Boolean.class)return boolean.class;
+		if(c==Byte.class)return byte.class;
+		if(c==Character.class)return char.class;
+		if(c==Short.class)return short.class;
+		return null;
+	}
+
+	static final List<Class<?>> WIDENING=Arrays.<Class<?>>asList(
+		byte.class,short.class,int.class,long.class,float.class,double.class);
+
+	/* Whether an argument could go to that parameter. Generous on purpose: a number
+	   widens, as a Kotlin literal adapts to the parameter. Letting through too much
+	   only means more candidates, and candidates that disagree answer null. */
+	static boolean accepts(Class<?> param,Class<?> arg){
+		if(arg==null)return true;
+		if(param.isPrimitive()){
+			Class<?> a=unboxedClass(arg);
+			if(a==null)return false;
+			if(a==param)return true;
+			if(a==char.class)a=int.class;
+			int from=WIDENING.indexOf(a);
+			int to=WIDENING.indexOf(param);
+			return from>=0&&to>=0&&from<to;
+		}
+		return param.isAssignableFrom(boxedClass(arg));
+	}
+
+	boolean fitsJava(java.lang.reflect.Method m,List<Class<?>> args){
+		Class<?>[] params=m.getParameterTypes();
+		int n=args.size();
+		boolean varargs=m.isVarArgs();
+		if(varargs?n<params.length-1:n!=params.length)return false;
+		for(int i=0;i<n;i++){
+			Class<?> param;
+			if(varargs&&i>=params.length-1){
+				// as the array itself, or as one of its elements
+				if(n==params.length&&accepts(params[i],args.get(i)))continue;
+				param=params[params.length-1].getComponentType();
+			}else param=params[i];
+			if(!accepts(param,args.get(i)))return false;
+		}
+		return true;
+	}
+
+	/* The methods a call could mean: by name, by being static or not, and by the
+	   arguments it is given. */
+	List<java.lang.reflect.Method> libraryCandidates(String recvType,String method,
+			KotlinParser.ArgListContext argList){
+		List<java.lang.reflect.Method> out=new ArrayList<java.lang.reflect.Method>();
+		Class<?> c=libraryClass(recvType);
+		if(c==null)return out;
+		boolean statics=recvType.startsWith(STATIC);
+		List<Class<?>> args=new ArrayList<Class<?>>();
+		for(String t:argTypes(argList))args.add(argumentClass(t));
+		List<java.lang.reflect.Method> exact=new ArrayList<java.lang.reflect.Method>();
+		for(java.lang.reflect.Method m:library.methodsOf(c)){
+			if(!m.getName().equals(method))continue;
+			if(java.lang.reflect.Modifier.isStatic(m.getModifiers())!=statics)continue;
+			if(!fitsJava(m,args))continue;
+			out.add(m);
+			if(!m.isVarArgs()&&Arrays.asList(m.getParameterTypes()).equals(args))exact.add(m);
+		}
+		/* An overload taking exactly the argument types is the one both languages call:
+		   'measure(3)' is measure(int), never measure(double). */
+		return exact.isEmpty()?out:exact;
+	}
+
+	/** True when the library class itself has a method by that name, with that arity. */
+	boolean libraryHasMethod(String recvType,String method,KotlinParser.ArgListContext argList){
+		Class<?> c=libraryClass(recvType);
+		if(c==null)return false;
+		boolean statics=recvType.startsWith(STATIC);
+		int n=argTypes(argList).size();
+		for(java.lang.reflect.Method m:library.methodsOf(c)){
+			if(!m.getName().equals(method))continue;
+			if(java.lang.reflect.Modifier.isStatic(m.getModifiers())!=statics)continue;
+			int params=m.getParameterCount();
+			if(m.isVarArgs()?n>=params-1:n==params)return true;
+		}
+		return false;
+	}
+
+	/* What a call returns: the one type every fitting overload agrees on. Java picks
+	   the most specific overload, which this does not try to imitate; when they
+	   disagree, the answer is that it is not known. */
+	String libraryCallType(String recvType,String method,KotlinParser.ArgListContext argList){
+		Set<String> answers=new HashSet<String>();
+		for(java.lang.reflect.Method m:libraryCandidates(recvType,method,argList))
+			answers.add(libraryTypeName(m.getGenericReturnType()));
+		return answers.size()==1?answers.iterator().next():null;
+	}
+
+	/* A Kotlin property of a Java class: a public field of that name, or else a getter
+	   Kotlin reads as one -- 'd.year' is d.getYear(), 'v.isShown' is v.isShown(). The
+	   field wins, as a member does over Kotlin's synthetic property. */
+	java.lang.reflect.Field libraryField(String recvType,String member){
+		Class<?> c=libraryClass(recvType);
+		if(c==null)return null;
+		boolean statics=recvType.startsWith(STATIC);
+		for(java.lang.reflect.Field f:library.fieldsOf(c))
+			if(f.getName().equals(member)
+					&&java.lang.reflect.Modifier.isStatic(f.getModifiers())==statics)return f;
+		return null;
+	}
+
+	/* The getters Kotlin turns into the property 'member'. Only instance methods with
+	   no parameters that answer something; static ones are no property in Kotlin. */
+	List<java.lang.reflect.Method> libraryGetters(String recvType,String member){
+		List<java.lang.reflect.Method> out=new ArrayList<java.lang.reflect.Method>();
+		Class<?> c=libraryClass(recvType);
+		if(c==null||recvType.startsWith(STATIC))return out;
+		for(java.lang.reflect.Method m:library.methodsOf(c)){
+			if(m.getParameterCount()!=0||java.lang.reflect.Modifier.isStatic(m.getModifiers())
+					||m.getReturnType()==void.class)continue;
+			if(member.equals(propertyOfGetter(m)))out.add(m);
+		}
+		return out;
+	}
+
+	/* The name Kotlin gives the property of a getter, by its own rules: 'getX' needs
+	   something other than a lowercase letter after the prefix and is decapitalised
+	   the way Kotlin does it (getURL -> url, getURLText -> urlText); an 'isX' that
+	   answers a boolean keeps its name. */
+	static String propertyOfGetter(java.lang.reflect.Method m){
+		String name=m.getName();
+		if(name.startsWith("is")&&name.length()>2&&!Character.isLowerCase(name.charAt(2))
+				&&m.getReturnType()==boolean.class)return name;
+		if(name.startsWith("get")&&name.length()>3&&!Character.isLowerCase(name.charAt(3)))
+			return decapitalizeSmart(name.substring(3));
+		return null;
+	}
+
+	static String decapitalizeSmart(String s){
+		if(s.isEmpty()||!isAsciiUpper(s.charAt(0)))return s;
+		if(s.length()==1||!isAsciiUpper(s.charAt(1)))
+			return Character.toLowerCase(s.charAt(0))+s.substring(1);
+		int i=0;
+		while(i<s.length()&&isAsciiUpper(s.charAt(i)))i++;
+		if(i==s.length())return s.toLowerCase(Locale.ROOT);
+		return s.substring(0,i-1).toLowerCase(Locale.ROOT)+s.substring(i-1);
+	}
+
+	static boolean isAsciiUpper(char c){ return c>='A'&&c<='Z'; }
+
+	/** A public class nested in the one a static receiver names, or null. */
+	Class<?> libraryNestedClass(String recvType,String member){
+		if(recvType==null||!recvType.startsWith(STATIC))return null;
+		Class<?> c=libraryClass(recvType);
+		if(c==null)return null;
+		try{
+			for(Class<?> n:c.getClasses())
+				if(n.getSimpleName().equals(member)
+						&&java.lang.reflect.Modifier.isStatic(n.getModifiers()))return n;
+		}catch(LinkageError|SecurityException e){
+			// not loadable from this classpath: not known
+		}
+		return null;
+	}
+
+	/** The getter's name when 'member' is a getter-backed property, else null. */
+	String libraryGetterName(String recvType,String member){
+		if(libraryField(recvType,member)!=null)return null;
+		List<java.lang.reflect.Method> getters=libraryGetters(recvType,member);
+		return getters.isEmpty()?null:getters.get(0).getName();
+	}
+
+	/* Kotlin reads an enum's name() and ordinal() as the properties 'name' and
+	   'ordinal'. They follow no getter convention, so they are named here. */
+	boolean isEnumProperty(String recvType,String member){
+		Class<?> c=libraryClass(recvType);
+		return c!=null&&!recvType.startsWith(STATIC)&&Enum.class.isAssignableFrom(c)
+			&&(member.equals("name")||member.equals("ordinal"))
+			&&libraryField(recvType,member)==null;
+	}
+
+	/* The type of a property read: the field's, or the one its getters agree on. */
+	String libraryReadType(String recvType,String member){
+		java.lang.reflect.Field f=libraryField(recvType,member);
+		if(f!=null)return libraryTypeName(f.getGenericType());
+		Set<String> answers=new HashSet<String>();
+		for(java.lang.reflect.Method m:libraryGetters(recvType,member))
+			answers.add(libraryTypeName(m.getGenericReturnType()));
+		return answers.size()==1?answers.iterator().next():null;
+	}
+
+	/* The setter Kotlin uses for 'x.member = v': named after the getter, taking what the
+	   getter answers. Without one the property is read-only, a 'val'. */
+	String librarySetterName(String recvType,String member){
+		List<java.lang.reflect.Method> getters=libraryGetters(recvType,member);
+		if(getters.isEmpty())return null;
+		java.lang.reflect.Method getter=getters.get(0);
+		String name=getter.getName();
+		String setter="set"+(name.startsWith("is")?name.substring(2):name.substring(3));
+		for(java.lang.reflect.Method m:library.methodsOf(libraryClass(recvType))){
+			if(!m.getName().equals(setter)||m.getParameterCount()!=1
+					||java.lang.reflect.Modifier.isStatic(m.getModifiers()))continue;
+			if(m.getParameterTypes()[0]==getter.getReturnType())return setter;
+		}
+		return null;
 	}
 
 	// -------------------------------------------------------- dependencies
@@ -598,6 +1151,7 @@ class Translator {
 			   to the source it came from. */
 			Translator dep=new Translator(cls,f.getParentFile(),visitedDeps,depCache);
 			dep.emitDeps=emitDeps;
+			dep.library=library;
 			dep.sourceName=f.getName();
 			dep.collect(tree);
 			if(emitDeps){
@@ -1775,7 +2329,10 @@ class Translator {
 		if(elem(type)!=null&&(op.equals("+=")||op.equals("-=")))
 			return memberCall(lhs,type,op.equals("+=")?"add":"remove",
 				code(ctx.assignexpr()),null)+";";
-		return lhs+" "+op+" "+code(ctx.assignexpr())+";";
+		String value=code(ctx.assignexpr());
+		String setter=librarySetterCall(propertyTarget(ctx.getChild(0)),op,value);
+		if(setter!=null)return setter;
+		return lhs+" "+op+" "+value+";";
 	}
 
 	String declarationNoInit(KotlinParser.NoassignContext n){
@@ -2071,7 +2628,7 @@ class Translator {
 	String exprID(KotlinParser.ExprIDContext c){
 		String name=c.getChild(0).getText();
 		if(c.getChildCount()==1)return identifierCode(name);
-		return memberRead(identifierCode(name),lookup(name),c.getChild(2).getText());
+		return memberRead(identifierCode(name),receiverType(name),c.getChild(2).getText());
 	}
 
 	/* Receivers are written as plain names in several rules (a[i], a.b(), a.indices,
@@ -2107,6 +2664,15 @@ class Translator {
 		Cls own=classOf(recvType);
 		if(own!=null)
 			return isGetter(own,member)?recv+"."+accessor(member)+"()":recv+"."+member;
+		/* So is a Java class: its public field, or else the getter Kotlin reads as that
+		   property. Neither found, it falls to the rules below, which is where a
+		   String's length or a collection's size are (Kotlin maps those itself). */
+		if(libraryClass(recvType)!=null){
+			if(libraryField(recvType,member)!=null)return recv+"."+member;
+			String getter=libraryGetterName(recvType,member);
+			if(getter!=null)return recv+"."+getter+"()";
+			if(isEnumProperty(recvType,member))return recv+"."+member+"()";
+		}
 		if(member.equals("length"))
 			return ("Object".equals(recvType)?"((String) "+recv+")":recv)+".length()";
 		if(member.equals("size"))return recv+".size()";
@@ -2135,6 +2701,13 @@ class Translator {
 		}
 		Cls own=classOf(recvType);
 		if(own!=null)return memberType(own,member);
+		if(libraryClass(recvType)!=null&&(libraryField(recvType,member)!=null
+				||!libraryGetters(recvType,member).isEmpty()))
+			return libraryReadType(recvType,member);
+		if(isEnumProperty(recvType,member))return member.equals("name")?"String":"int";
+		// 'Locale.LanguageRange': a nested class, the receiver of what follows it
+		Class<?> nested=libraryNestedClass(recvType,member);
+		if(nested!=null)return STATIC+nested.getCanonicalName();
 		if(member.equals("length")||member.equals("size")||member.equals("lastIndex"))return "int";
 		return null;
 	}
@@ -2150,7 +2723,7 @@ class Translator {
 		if(c.callName()!=null)
 			return namedCall(c.callName().getText(),args,argParts(c.argList()).size());
 		String recv=c.getChild(0).getText();
-		return memberCall(receiverOf(c),lookup(recv),c.getChild(2).getText(),args,
+		return memberCall(receiverOf(c),receiverType(recv),c.getChild(2).getText(),args,
 			c.argList());
 	}
 
@@ -2286,6 +2859,12 @@ class Translator {
 	String memberCall(String recvRaw,String recvType,String method,String args,
 			KotlinParser.ArgListContext argList){
 		String recv=group(recvRaw);
+		/* A method of a Java class is called as it is: in Kotlin a member wins over an
+		   extension of the same name, and the rules below are extensions (isNotEmpty,
+		   sum, uppercase...). Without an argument list, as for '+=' on a collection, the
+		   arity is not known and nothing is assumed. */
+		if((argList!=null||args.isEmpty())&&libraryHasMethod(recvType,method,argList))
+			return recv+"."+method+"("+args+")";
 		/* Kotlin 1.5 renamed these two; Java keeps the older names. (Kotlin's use
 		   Locale.ROOT and Java's the default locale, which differ only where the
 		   locale changes the letters, as in Turkish.) */
@@ -2359,6 +2938,9 @@ class Translator {
 	}
 
 	String memberCallType(String recvType,String method,KotlinParser.ArgListContext argList){
+		// a Java class answers for its own methods; the rules below would only guess
+		if(libraryHasMethod(recvType,method,argList))
+			return libraryCallType(recvType,method,argList);
 		if(elem(recvType)!=null){
 			if(method.equals("get")||method.equals("first")||method.equals("last")
 					||method.equals("removeAt"))return elem(recvType);
@@ -2719,26 +3301,79 @@ class Translator {
 	String typeOfChain(KotlinParser.ChainContext c){ return walkChain(c)[1]; }
 
 	String[] walkChain(KotlinParser.ChainContext c){
+		String[] start=chainStart(c);
+		return chainLinks(start[0],start[1],c.chainLink(),0,start[2]!=null);
+	}
+
+	/* Code and type of what a chain starts with; the third entry is non-null when
+	   that start is itself a call. */
+	String[] chainStart(KotlinParser.ChainContext c){
 		ParseTree start=c.chainStart().getChild(0);
-		String code;
-		String type;
 		if(start instanceof KotlinParser.CallHeadContext){
 			KotlinParser.CallHeadContext h=(KotlinParser.CallHeadContext)start;
 			String args=h.argList()==null?"":argsOf(h.argList());
-			code=namedCall(h.callName().getText(),args,argParts(h.argList()).size());
-			type=namedCallType(h.callName().getText(),h.argList());
-		}else if(start instanceof KotlinParser.StringLiteralContext){
-			code=template(start.getText());
-			type="String";
-		}else{
-			String name=start.getText();
-			code=identifierCode(name);
-			// 'Math' is not a value, but naming it as the receiver type lets the next
-			// link know the call yields a double.
-			type="Math".equals(name)?"Math":lookup(name);
+			return new String[]{
+				namedCall(h.callName().getText(),args,argParts(h.argList()).size()),
+				namedCallType(h.callName().getText(),h.argList()),"call"};
 		}
-		return chainLinks(code,type,c.chainLink(),0,
-			start instanceof KotlinParser.CallHeadContext);
+		if(start instanceof KotlinParser.StringLiteralContext)
+			return new String[]{template(start.getText()),"String",null};
+		String name=start.getText();
+		// 'Math' is not a value, but naming it as the receiver type lets the next
+		// link know the call yields a double.
+		return new String[]{identifierCode(name),
+			"Math".equals(name)?"Math":receiverType(name),null};
+	}
+
+	/* What a property assignment writes to: the receiver's code and type, the
+	   property, and whether evaluating the receiver performs a call. Null for anything
+	   that is not 'receiver.property', such as a plain name or a call. */
+	String[] propertyTarget(ParseTree lhs){
+		if(lhs instanceof KotlinParser.ExprIDContext){
+			KotlinParser.ExprIDContext e=(KotlinParser.ExprIDContext)lhs;
+			if(e.getChildCount()==1)return null;
+			String name=e.getChild(0).getText();
+			return new String[]{group(identifierCode(name)),receiverType(name),
+				e.getChild(2).getText(),null};
+		}
+		if(!(lhs instanceof KotlinParser.ChainContext))return null;
+		KotlinParser.ChainContext c=(KotlinParser.ChainContext)lhs;
+		List<KotlinParser.ChainLinkContext> links=c.chainLink();
+		KotlinParser.ChainLinkContext last=links.get(links.size()-1);
+		// a call, or a '?.' whose guard has to stay around the whole assignment
+		if(last.getChildCount()>2||last.getChild(0).getText().equals("?."))return null;
+		String[] start=chainStart(c);
+		boolean calls=start[2]!=null;
+		for(KotlinParser.ChainLinkContext link:links.subList(0,links.size()-1))
+			if(link.getChildCount()>2)calls=true;
+		String[] recv=chainLinks(start[0],start[1],links.subList(0,links.size()-1),0,
+			start[2]!=null);
+		return new String[]{group(recv[0]),recv[1],last.memberName().getText(),
+			calls?"call":null};
+	}
+
+	/* 'x.text = v' on a Java class is x.setText(v) when the property is a getter's.
+	   Null when it is not that case, so the assignment is written as before. */
+	String librarySetterCall(String[] target,String op,String value){
+		if(target==null)return null;
+		String recv=target[0];
+		String recvType=target[1];
+		String member=target[2];
+		if(libraryClass(recvType)==null||libraryField(recvType,member)!=null)return null;
+		String getter=libraryGetterName(recvType,member);
+		if(getter==null)return null;
+		String setter=librarySetterName(recvType,member);
+		if(setter==null)
+			return cannotTranslate("'"+member+"' of "+libraryClass(recvType).getName()
+				+" has a getter and no setter: Kotlin reads it as a val, it cannot be"
+				+" assigned");
+		if(op.equals("="))return recv+"."+setter+"("+value+");";
+		/* A compound assignment reads the property and writes it back, naming the
+		   receiver twice: fine for a variable, but a call in it would run twice. */
+		if(target[3]!=null||!isSimpleName(recv))
+			return cannotTranslate("'"+op+"' on the property '"+member+"' would evaluate"
+				+" its receiver twice; assign the receiver to a variable first");
+		return recv+"."+setter+"("+recv+"."+getter+"() "+op.charAt(0)+" "+group(value)+");";
 	}
 
 	/* 'prefixCalls' says whether what is written to the left of this link performs a
@@ -2969,14 +3604,14 @@ class Translator {
 			if(name.equals("PI")||name.equals("E"))return "double";
 			return null;
 		}
-		return memberReadType(lookup(name),c.getChild(2).getText());
+		return memberReadType(receiverType(name),c.getChild(2).getText());
 	}
 
 	String callType(KotlinParser.CallContext c){
 		if(c.callName()!=null)return namedCallType(c.callName().getText(),c.argList());
 		String recv=c.getChild(0).getText();
 		if(recv.equals("Math"))return "double";
-		return memberCallType(lookup(recv),c.getChild(2).getText(),c.argList());
+		return memberCallType(receiverType(recv),c.getChild(2).getText(),c.argList());
 	}
 
 	String namedCallType(String name,KotlinParser.ArgListContext argList){
@@ -3180,6 +3815,10 @@ public class Kotlin2Java{
 		System.err.println("  <input>    a .kt file, or '-' to read from stdin");
 		System.err.println("  -e <code>  translate the code given as an argument");
 		System.err.println("  --deps     also translate the .kt dependencies it imports");
+		System.err.println("  --classpath <jars and directories>");
+		System.err.println("             compiled libraries the code imports (android.jar,");
+		System.err.println("             say), separated by '"+File.pathSeparator+"'; their types are");
+		System.err.println("             read from there, and they are imported, not translated");
 		System.err.println("  [output]   .java file; if omitted and the input is not a");
 		System.err.println("             file, the result goes to stdout");
 		System.err.println("The generated class is named after the output file (or 'Main'");
@@ -3210,10 +3849,28 @@ public class Kotlin2Java{
 
 	public static void main(String[] rawArgs) throws IOException{
 		boolean emitDeps=false;
+		List<File> classpath=new ArrayList<File>();
 		List<String> list=new ArrayList<String>();
-		for(String a:rawArgs){
+		for(int i=0;i<rawArgs.length;i++){
+			String a=rawArgs[i];
 			if(a.equals("--deps"))emitDeps=true;
-			else list.add(a);
+			else if(a.equals("--classpath")){
+				if(i+1>=rawArgs.length){
+					usage();
+					System.exit(1);
+				}
+				String entries=rawArgs[++i];
+				for(String entry:entries.split(java.util.regex.Pattern.quote(File.pathSeparator))){
+					if(entry.isEmpty())continue;
+					File f=new File(entry);
+					// a misspelt path would only show up later, as types nobody can find
+					if(!f.exists()){
+						System.err.println("classpath entry does not exist: "+entry);
+						System.exit(1);
+					}
+					classpath.add(f);
+				}
+			}else list.add(a);
 		}
 		String[] args=list.toArray(new String[0]);
 		if(args.length==0||args[0].equals("-h")||args[0].equals("--help")){
@@ -3280,6 +3937,14 @@ public class Kotlin2Java{
 		if(!args[0].equals("-")&&!args[0].equals("-e"))
 			translator.sourceName=new File(args[0]).getName();
 		translator.emitDeps=emitDeps;            // set before collect: imports load there
+		if(!classpath.isEmpty()){
+			try{
+				translator.library=new JavaLibrary(classpath);
+			}catch(IllegalArgumentException e){
+				System.err.println(e.getMessage());
+				System.exit(1);
+			}
+		}
 		translator.collect(tree);
 		String java=translator.translate(tree);
 		for(String n:translator.notes)System.err.println("note: "+n);

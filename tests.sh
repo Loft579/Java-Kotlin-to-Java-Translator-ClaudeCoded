@@ -92,6 +92,44 @@ if [ -d "$ROOT/input_files/multi" ]; then
     done
 fi
 
+# A compiled library given with --classpath, standing in for android.jar: it is
+# compiled first, on its own, so the translator sees nothing but its .class files.
+if [ -d "$ROOT/input_files/classpath" ]; then
+    echo
+    echo "classpath:"
+    lib="$OUT/classpath_lib"
+    mkdir -p "$lib"
+    if ! "$JAVA_BIN/javac" -nowarn -encoding UTF-8 -d "$lib" \
+            $(find "$ROOT/input_files/classpath/lib" -name '*.java') \
+            >"$LOG/classpath_lib.javac.log" 2>&1; then
+        printf '  %-20s LIB ERR  %s\n' lib "$(grep -m1 error: "$LOG/classpath_lib.javac.log")"
+        fail=$((fail+1))
+    else
+        for kt in "$ROOT"/input_files/classpath/app*.kt; do
+            name="$(basename "$kt" .kt)"
+            cls="$(printf '%s' "${name^}")"
+            dir="$OUT/classpath_$name"
+            mkdir -p "$dir"
+            ( cd "$dir" && "$JAVA_BIN/java" -cp "$CP" "$MAIN_CLASS" --classpath "$lib" "$kt" "$cls.java" ) \
+                >"$LOG/classpath_$name.trans.log" 2>&1
+            if [ $? -ne 0 ]; then
+                printf '  %-20s TRANS ERR  %s\n' "$name" "$(grep -m1 error "$LOG/classpath_$name.trans.log")"
+                fail=$((fail+1))
+                continue
+            fi
+            if "$JAVA_BIN/javac" -nowarn -encoding UTF-8 -cp "$lib" -d "$dir/classes" "$dir/$cls.java" \
+                    >"$LOG/classpath_$name.javac.log" 2>&1; then
+                out="$("$JAVA_BIN/java" -cp "$dir/classes:$lib" "$cls" 2>&1 | tr '\n' ' ')"
+                printf '  %-20s ok    -> %s\n' "$name" "$out"
+                pass=$((pass+1))
+            else
+                printf '  %-20s JAVAC ERR  %s\n' "$name" "$(grep -m1 error: "$LOG/classpath_$name.javac.log")"
+                fail=$((fail+1))
+            fi
+        done
+    fi
+fi
+
 # Negative fixtures: these must be REJECTED. A translator that quietly drops what
 # it cannot handle looks like it passes, so the guarantee is tested explicitly.
 if [ -d "$ROOT/input_files/invalid" ]; then
