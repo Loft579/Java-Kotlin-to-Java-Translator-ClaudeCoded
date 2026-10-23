@@ -417,3 +417,17 @@ Not supported:
 - `==` between two operands whose types cannot be inferred falls back to Java's
   `==`. When the types are known it becomes `Objects.equals`, matching Kotlin's
   structural equality.
+
+# Credits and license
+
+This project started as [chingisooinar/Kotlin-Basic-Syntax-into-Java-Translator](https://github.com/chingisooinar/Kotlin-Basic-Syntax-into-Java-Translator)
+by Chingis Oinar, whose commits are kept in this history. His project has no
+license: what remains of it here (mostly the grammar, his test inputs and parts of
+this README) is still his, and is not covered by this repository's MIT License.
+
+`tools/notepad++/` is Bartosz Sobol's [npp-kotlin-gradle](https://github.com/bsobol/npp-kotlin-gradle),
+under its own MIT License.
+
+Everything else -- the rewritten translator, the test suite, the scripts and the
+documentation added here -- is by Loft579 and is MIT licensed. [LICENSE](LICENSE)
+spells out who owns what.

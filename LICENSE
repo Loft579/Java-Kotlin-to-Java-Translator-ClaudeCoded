@@ -1,3 +1,23 @@
+This repository holds the work of three authors, under different terms.
+
+1. Chingis Oinar (@chingisooinar) -- the original translator, from
+   https://github.com/chingisooinar/Kotlin-Basic-Syntax-into-Java-Translator:
+   the commits he authored, and what remains of his work in the current files,
+   mainly the grammar in Kotlin.g4, the test inputs that come from his project,
+   the parts of README.md he wrote, and the folder
+   "Basic Kotlin Syntax into Java Converter 8874fdbba36d4862ab592d7582c470d2".
+   His project was published without a license. These parts remain his, all
+   rights reserved, and are NOT covered by the MIT License below.
+
+2. Bartosz Sobol (@bsobol) -- the files in tools/notepad++/, from
+   https://github.com/bsobol/npp-kotlin-gradle. They are his, under his own MIT
+   License, in tools/notepad++/LICENSE.md.
+
+3. Loft579 -- everything else: the changes and additions made in this
+   repository, which are licensed under the MIT License below.
+
+--------------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2026 Loft579
