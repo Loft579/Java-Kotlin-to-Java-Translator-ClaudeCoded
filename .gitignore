@@ -4,3 +4,5 @@ build/
 input.java
 # ANTLR jar, when downloaded next to the scripts
 antlr*-complete.jar
+*clean✳*
+*✳*
