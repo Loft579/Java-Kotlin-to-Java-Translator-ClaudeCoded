@@ -65,7 +65,7 @@ sha256_of() {
 check_sha256() {
     local got
     got="$(sha256_of "$1")"
-    echo "   sha256 of $(basename "$1")"
+    echo "   sha256 of $1"
     echo "     expected: $2"
     echo "     got:      $got"
     if [ "$got" = "$2" ]; then
@@ -76,17 +76,52 @@ check_sha256() {
     return 1
 }
 
-# download URL FILE
+# download URL FILE, retrying when the connection fails or the server errs
 download() {
-    echo "   downloading $1"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$2" "$1"
+        curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 --retry-connrefused \
+            -o "$2" "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$2" "$1"
+        wget -q --tries=3 --timeout=20 -O "$2" "$1"
     else
-        echo "neither curl nor wget is installed, cannot download $1" >&2
+        echo "     neither curl nor wget is installed" >&2
         return 1
     fi
+}
+
+# fetch URL SHA256 DEST
+# Makes DEST the official file, and never deletes anything to do it:
+# - DEST already there: it is used if its SHA-256 matches, else the build stops
+#   and the file is left as it is.
+# - otherwise it is downloaded to DEST.part, and only moved to DEST if its
+#   SHA-256 matches. A failed or wrong download never ends up where it is used.
+fetch() {
+    local url="$1" want="$2" dest="$3"
+    if [ -f "$dest" ]; then
+        echo "   found $dest"
+        check_sha256 "$dest" "$want" && return 0
+        echo "     it was left untouched. Replace it with the official file from" >&2
+        echo "     $url" >&2
+        echo "     or move it away so that it is downloaded again." >&2
+        return 1
+    fi
+    local part="$dest.part"
+    echo "   downloading $url"
+    if ! download "$url" "$part"; then
+        echo "   sha256 of $part" >&2
+        echo "     expected: $want" >&2
+        echo "     got:      (nothing: the download failed)" >&2
+        echo "     -> NOT CHECKED" >&2
+        echo "     -> FAILED: could not download it (no connection, or the server is" >&2
+        echo "        down). Nothing was changed: try again later, or download it" >&2
+        echo "        yourself and put it at $dest" >&2
+        return 1
+    fi
+    if ! check_sha256 "$part" "$want"; then
+        echo "     nothing was changed; the download was kept, unused, at $part" >&2
+        return 1
+    fi
+    mv "$part" "$dest"
 }
 
 JAVA_BIN="$(find_java_bin)" || {

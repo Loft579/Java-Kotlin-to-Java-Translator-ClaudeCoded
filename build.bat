@@ -9,6 +9,8 @@ rem   generated\         the parser ANTLR wrote from Kotlin.g4
 rem   antlr-runtime\     the source of the ANTLR runtime that parser uses
 rem Delete generated\ or antlr-runtime\ and this script puts them back: it downloads
 rem what can only come from the internet, checks its SHA-256, and generates the rest.
+rem It never deletes a file to do it: a download that fails or does not match stops
+rem the build and leaves everything as it was.
 rem After editing Kotlin.g4, delete generated\ so that it is made again.
 setlocal enabledelayedexpansion
 
@@ -64,18 +66,16 @@ if not exist "%JDK%\jar.exe" (
 echo == jdk: %JDK%
 
 rem --- 1. the ANTLR runtime, as source ---
+rem (gotos rather than blocks: a path holding a parenthesis, as in
+rem "Program Files (x86)", would close a block early)
 echo == antlr-runtime\
-if exist "%RUNTIME%\org\antlr\v4\runtime\" (
-    echo    present, using the copy in the repository
-    goto :runtime_done
-)
+if exist "%RUNTIME%\org\antlr\v4\runtime\" goto :runtime_present
+if exist "%RUNTIME%\org" goto :runtime_partial
 echo    missing: fetching the official source of ANTLR %ANTLR_VERSION%
 set "JARFILE=%DOWNLOADS%\%ANTLR_RUNTIME_SRC_NAME%"
-call :download "%ANTLR_RUNTIME_SRC_URL%" "%JARFILE%" || goto :fail
-call :check_sha256 "%JARFILE%" %ANTLR_RUNTIME_SRC_SHA256% || (del "%JARFILE%" & goto :fail)
+call :fetch "%ANTLR_RUNTIME_SRC_URL%" %ANTLR_RUNTIME_SRC_SHA256% "%JARFILE%" || goto :fail
 set "LICENSE=%DOWNLOADS%\LICENSE.txt"
-call :download "%ANTLR_LICENSE_URL%" "%LICENSE%" || goto :fail
-call :check_sha256 "%LICENSE%" %ANTLR_LICENSE_SHA256% || (del "%LICENSE%" & goto :fail)
+call :fetch "%ANTLR_LICENSE_URL%" %ANTLR_LICENSE_SHA256% "%LICENSE%" || goto :fail
 rem only the Java sources (org\...), not the build metadata the jar also carries
 if exist "%DOWNLOADS%\runtime.next" rmdir /s /q "%DOWNLOADS%\runtime.next"
 mkdir "%DOWNLOADS%\runtime.next"
@@ -85,42 +85,51 @@ set "RC=%errorlevel%"
 popd
 if not "%RC%"=="0" goto :fail
 if not exist "%RUNTIME%" mkdir "%RUNTIME%"
-if exist "%RUNTIME%\org" rmdir /s /q "%RUNTIME%\org"
-move "%DOWNLOADS%\runtime.next\org" "%RUNTIME%\org" >nul || goto :fail
-copy /y "%LICENSE%" "%RUNTIME%\LICENSE.txt" >nul
+call :move_retry "%DOWNLOADS%\runtime.next\org" "%RUNTIME%\org" || goto :fail
+if not exist "%RUNTIME%\LICENSE.txt" copy "%LICENSE%" "%RUNTIME%\LICENSE.txt" >nul
 rmdir /s /q "%DOWNLOADS%\runtime.next"
 echo    ok: antlr-runtime\ restored
+goto :runtime_done
+:runtime_partial
+echo    incomplete: antlr-runtime\org is there but not the runtime in it.>&2
+echo    Nothing was changed; delete the whole antlr-runtime\ to fetch it again.>&2
+goto :fail
+:runtime_present
+echo    present, using the copy in the repository
+echo    sha256: not checked, there is no official value for the unpacked copy
+echo      (delete antlr-runtime\ to download it again and check it)
 :runtime_done
 
 rem --- 2. the parser generated from Kotlin.g4 ---
 echo == generated\ (the parser ANTLR writes from Kotlin.g4)
 set "REGEN="
+set "PRESENT="
 for %%F in (%PARSER_FILES%) do (
-    if not defined REGEN if not exist "%GENERATED%\%%F" set "REGEN=%%F is missing"
+    if exist "%GENERATED%\%%F" (
+        set "PRESENT=!PRESENT! %%F"
+    ) else (
+        if not defined REGEN set "REGEN=%%F is missing"
+    )
 )
-
-if not defined REGEN (
-    echo    present, using the copy in the repository
-    echo    ^(after editing Kotlin.g4, delete generated\ to make it again^)
-    goto :generated_done
-)
+if not defined REGEN goto :generated_present
+if defined PRESENT goto :generated_partial
 echo    regenerating (%REGEN%), this needs the ANTLR %ANTLR_VERSION% tool
 set "TOOL="
 if defined ANTLR_JAR if exist "%ANTLR_JAR%" set "TOOL=%ANTLR_JAR%"
 if not defined TOOL if exist "%ROOT%\%ANTLR_TOOL_NAME%" set "TOOL=%ROOT%\%ANTLR_TOOL_NAME%"
-if defined TOOL (
-    echo    found !TOOL!
-) else (
-    echo    not on this machine
-    set "TOOL=%ROOT%\%ANTLR_TOOL_NAME%"
-    call :download "%ANTLR_TOOL_URL%" "!TOOL!" || goto :fail
-)
+if not defined TOOL goto :tool_download
+rem a copy this machine already has: checked, never replaced or deleted
+echo    found %TOOL%
 call :check_sha256 "%TOOL%" %ANTLR_TOOL_SHA256%
-if errorlevel 1 (
-    if /i "%TOOL%"=="%ROOT%\%ANTLR_TOOL_NAME%" del "%TOOL%"
-    echo    delete it, or set ANTLR_JAR to the official %ANTLR_TOOL_NAME%>&2
-    goto :fail
-)
+if not errorlevel 1 goto :tool_ok
+echo      it was left untouched. Replace it with the official>&2
+echo      %ANTLR_TOOL_NAME%, or set ANTLR_JAR to one.>&2
+goto :fail
+:tool_download
+echo    not on this machine
+set "TOOL=%ROOT%\%ANTLR_TOOL_NAME%"
+call :fetch "%ANTLR_TOOL_URL%" %ANTLR_TOOL_SHA256% "%TOOL%" || goto :fail
+:tool_ok
 rem Run from the repository with a relative path: ANTLR writes the path it was given
 rem into each file's first line, and an absolute one would put this machine's
 rem directories in the repository.
@@ -132,10 +141,19 @@ popd
 if not "%RC%"=="0" goto :fail
 if not exist "%GENERATED%" mkdir "%GENERATED%"
 for %%F in (%PARSER_FILES%) do (
-    move /y "%ROOT%\build\gen.next\%%F" "%GENERATED%\%%F" >nul || goto :fail
+    call :move_retry "%ROOT%\build\gen.next\%%F" "%GENERATED%\%%F" || goto :fail
 )
 rmdir /s /q "%ROOT%\build\gen.next"
 echo    ok: %PARSER_FILES%
+goto :generated_done
+:generated_partial
+echo    incomplete: %REGEN%, but these are there:%PRESENT%>&2
+echo    Nothing was changed; delete the whole generated\ to make it again.>&2
+goto :fail
+:generated_present
+echo    present, using the copy in the repository
+echo    sha256: not checked, ANTLR publishes no value for files made from Kotlin.g4
+echo      (delete generated\ to make it again, as after editing Kotlin.g4)
 :generated_done
 
 rem --- 3. compile ---
@@ -224,7 +242,7 @@ exit /b 0
 rem :check_sha256 FILE EXPECTED  -> prints the comparison, fails on a mismatch
 :check_sha256
 call :sha256_of "%~1" || exit /b 1
-echo    sha256 of %~nx1
+echo    sha256 of %~1
 echo      expected: %~2
 echo      got:      %SHA%
 if /i "%SHA%"=="%~2" (
@@ -234,13 +252,60 @@ if /i "%SHA%"=="%~2" (
 echo      -^> MISMATCH: this is not the official file>&2
 exit /b 1
 
-rem :download URL FILE
-:download
+rem :fetch URL SHA256 DEST
+rem Makes DEST the official file, and never deletes anything to do it:
+rem - DEST already there: it is used if its SHA-256 matches, else the build stops
+rem   and the file is left as it is.
+rem - otherwise it is downloaded to DEST.part, and only moved to DEST if its
+rem   SHA-256 matches. A failed or wrong download never ends up where it is used.
+:fetch
+if not exist "%~3" goto :fetch_download
+echo    found %~3
+call :check_sha256 "%~3" %~2
+if not errorlevel 1 exit /b 0
+echo      it was left untouched. Replace it with the official file from>&2
+echo      %~1>&2
+echo      or move it away so that it is downloaded again.>&2
+exit /b 1
+:fetch_download
 echo    downloading %~1
-where curl.exe >nul 2>&1
-if not errorlevel 1 (
-    curl.exe -fsSL -o "%~2" "%~1"
-    exit /b !errorlevel!
-)
-powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%~1' -OutFile '%~2'"
+call :download "%~1" "%~3.part"
+if not errorlevel 1 goto :fetch_check
+echo    sha256 of %~3.part>&2
+echo      expected: %~2>&2
+echo      got:      ^(nothing: the download failed^)>&2
+echo      -^> NOT CHECKED>&2
+echo      -^> FAILED: could not download it (no connection, or the server is>&2
+echo         down). Nothing was changed: try again later, or download it>&2
+echo         yourself and put it at %~3>&2
+exit /b 1
+:fetch_check
+call :check_sha256 "%~3.part" %~2
+if not errorlevel 1 goto :fetch_move
+echo      nothing was changed; the download was kept, unused, at %~3.part>&2
+exit /b 1
+:fetch_move
+call :move_retry "%~3.part" "%~3"
 exit /b %errorlevel%
+
+rem :download URL FILE, retrying when the connection fails or the server errs
+:download
+where curl.exe >nul 2>&1
+if errorlevel 1 goto :download_ps
+curl.exe -fsSL --connect-timeout 20 --retry 3 --retry-delay 2 --retry-connrefused -o "%~2" "%~1"
+exit /b %errorlevel%
+:download_ps
+powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; for ($i = 1; $i -le 4; $i++) { try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 -Uri '%~1' -OutFile '%~2'; exit 0 } catch { Write-Host ('     ' + $_.Exception.Message); if ($i -lt 4) { Start-Sleep 2 } } }; exit 1"
+exit /b %errorlevel%
+
+rem :move_retry SRC DEST
+rem A move on a Windows drive can fail for a moment because OneDrive or an
+rem antivirus is still looking at files that were just written: it is retried.
+:move_retry
+for /l %%N in (1,1,10) do (
+    move "%~1" "%~2" >nul 2>&1 && exit /b 0
+    ping -n 2 127.0.0.1 >nul
+)
+echo    cannot move %~1 to %~2: something keeps it open (OneDrive, an antivirus^).>&2
+echo    Nothing was deleted; close whatever is using it and run build.bat again.>&2
+exit /b 1
