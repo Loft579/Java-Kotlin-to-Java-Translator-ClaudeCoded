@@ -1,14 +1,27 @@
 #!/usr/bin/env bash
-# FINDS the tools, it does not install anything: it looks for an existing JDK and
-# for the ANTLR jar, and exports JAVA_BIN and ANTLR_JAR for the other scripts.
-# Sourced by build.sh, tests.sh and run_tests.sh so the search lives in one place.
-# Both can be overridden from the environment:
-#   JAVA_HOME=/path/to/jdk ANTLR_JAR=/path/to/antlr-complete.jar ./build.sh
+# Shared by build.sh, tests.sh, run_tests.sh and kotlin2java.sh: finds the JDK and
+# exports JAVA_BIN, and defines what build.sh needs to fetch the ANTLR parts it is
+# missing. Sourcing it downloads nothing; build.sh decides when that is needed.
 #
-# Search order for the JDK: $JAVA_HOME, then the PATH (a system install, which is
-# the normal case), then ~/.local/jvm and /usr/lib/jvm.
+# The JDK is taken from $JAVA_HOME, then the PATH, then ~/.local/jvm, /usr/lib/jvm
+# and /opt/java:   JAVA_HOME=/path/to/jdk ./build.sh
 
-ANTLR_URL="https://www.antlr.org/download/antlr-4.13.2-complete.jar"
+# --- the ANTLR parts this repository is built from --------------------------------
+# Both come straight from the ANTLR project. Their SHA-256 values were checked when
+# they were pinned: antlr.org, Maven Central (its .sha1) and an existing copy agreed.
+ANTLR_VERSION="4.13.2"
+# The tool: only needed to regenerate generated/ from Kotlin.g4. Compiled code, but
+# it never runs when translating; what it writes is plain Java in generated/.
+ANTLR_TOOL_NAME="antlr-$ANTLR_VERSION-complete.jar"
+ANTLR_TOOL_URL="https://www.antlr.org/download/$ANTLR_TOOL_NAME"
+ANTLR_TOOL_SHA256="eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76"
+# The runtime, as SOURCE code: it is compiled here with the rest of the translator.
+ANTLR_RUNTIME_SRC_NAME="antlr4-runtime-$ANTLR_VERSION-sources.jar"
+ANTLR_RUNTIME_SRC_URL="https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/$ANTLR_VERSION/$ANTLR_RUNTIME_SRC_NAME"
+ANTLR_RUNTIME_SRC_SHA256="4100b1df2f38152d8502e89195b94654d9aa22f5b6c47aca7b6a7f3194b5fbb0"
+# Its BSD license, which says it must travel with the copy kept in antlr-runtime/.
+ANTLR_LICENSE_URL="https://raw.githubusercontent.com/antlr/antlr4/$ANTLR_VERSION/LICENSE.txt"
+ANTLR_LICENSE_SHA256="3db1fb3ee79a4b4f9918fc4d0f6133bf18a3cf787f126cd22f8aa9b862281c0c"
 
 find_java_bin() {
     if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/javac" ]; then
@@ -24,45 +37,60 @@ find_java_bin() {
     return 1
 }
 
-# ANTLR_JAR wins, then a jar vendored in this directory (a deliberate pin). Beyond
-# that the NEWEST version found wins rather than the first directory looked at, so a
-# stale copy in one place cannot silently shadow a newer one somewhere else.
-find_antlr_jar() {
+# The ANTLR tool, if this machine already has it: $ANTLR_JAR, then this directory,
+# then the usual places. Only the exact version is accepted, because the code it
+# generates has to match the runtime in antlr-runtime/.
+find_antlr_tool() {
     if [ -n "${ANTLR_JAR:-}" ] && [ -f "$ANTLR_JAR" ]; then
         echo "$ANTLR_JAR"; return 0
     fi
     local j
-    for j in "$ROOT"/antlr*-complete.jar; do
+    for j in "$ROOT/$ANTLR_TOOL_NAME" "$HOME/.local/lib/$ANTLR_TOOL_NAME" \
+             "/usr/local/lib/$ANTLR_TOOL_NAME" "/usr/share/java/$ANTLR_TOOL_NAME" \
+             "/opt/$ANTLR_TOOL_NAME"; do
         [ -f "$j" ] && { echo "$j"; return 0; }
     done
-    local best=""
-    for j in "$HOME"/.local/lib/antlr*-complete.jar /usr/local/lib/antlr*-complete.jar \
-             /usr/share/java/antlr*-complete.jar /opt/antlr*-complete.jar; do
-        [ -f "$j" ] || continue
-        if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "$(jar_version "$best")" \
-                "$(jar_version "$j")" | sort -V | tail -1)" = "$(jar_version "$j")" ]; then
-            best="$j"
-        fi
-    done
-    [ -n "$best" ] && { echo "$best"; return 0; }
     return 1
 }
 
-# 4.13.2 out of /path/antlr-4.13.2-complete.jar; 0 when the name says nothing.
-jar_version() {
-    local v
-    v="$(basename "$1" | sed -n 's/^antlr-\{0,1\}\([0-9][0-9.]*\)-complete\.jar$/\1/p')"
-    echo "${v:-0}"
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1          # macOS
+    fi
+}
+
+# Prints the comparison and fails on a mismatch:  check_sha256 FILE EXPECTED
+check_sha256() {
+    local got
+    got="$(sha256_of "$1")"
+    echo "   sha256 of $(basename "$1")"
+    echo "     expected: $2"
+    echo "     got:      $got"
+    if [ "$got" = "$2" ]; then
+        echo "     -> MATCH"
+        return 0
+    fi
+    echo "     -> MISMATCH: this is not the official file" >&2
+    return 1
+}
+
+# download URL FILE
+download() {
+    echo "   downloading $1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "$2" "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1"
+    else
+        echo "neither curl nor wget is installed, cannot download $1" >&2
+        return 1
+    fi
 }
 
 JAVA_BIN="$(find_java_bin)" || {
     echo "No JDK found. Install one (apt install openjdk-17-jdk) or set JAVA_HOME." >&2
-    exit 1
-}
-ANTLR_JAR="$(find_antlr_jar)" || {
-    echo "ANTLR jar not found. Download it next to this script:" >&2
-    echo "  curl -fsSLO $ANTLR_URL" >&2
-    echo "or set ANTLR_JAR to its path." >&2
     exit 1
 }
 # The generated Java uses List.of, so a JDK older than 9 cannot compile the output.
@@ -70,6 +98,4 @@ JAVA_MAJOR="$("$JAVA_BIN/javac" -version 2>&1 | sed -n 's/^javac \([0-9][0-9]*\)
 if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt 11 ]; then
     echo "warning: javac $JAVA_MAJOR found; 11 or newer is expected" >&2
 fi
-
-ANTLR_VERSION="$(jar_version "$ANTLR_JAR")"
-export JAVA_BIN ANTLR_JAR ANTLR_VERSION
+export JAVA_BIN

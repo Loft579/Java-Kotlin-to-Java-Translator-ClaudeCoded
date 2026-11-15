@@ -9,30 +9,58 @@ String templates are supported: `"sum of $a and $b is ${a + b}"` becomes
 
 # How to build
 
-Requires a JDK (17+) and the ANTLR 4 complete jar:
+All it needs is a JDK (17+):
 
 ```
 sudo apt-get install -y openjdk-17-jdk-headless
-curl -LO https://www.antlr.org/download/antlr-4.13.2-complete.jar   # or into /usr/local/lib
-```
-
-`env.sh` finds them, it installs nothing: the JDK from `JAVA_HOME` or the `PATH`,
-the jar from `ANTLR_JAR`, from this directory (which pins a version), or else the
-newest one found under `~/.local/lib`, `/usr/local/lib` and `/usr/share/java` -- so an
-old copy in one place cannot shadow a newer one in another. `build.sh` prints which
-JDK and jar it used.
-
-```
-./build.sh     # generates the parser into build/gen, compiles into build/classes
-./tests.sh     # translates every input_files/*.kt and runs javac on each result
-./run_tests.sh # runs every program tests.sh produced and prints its output
+./build.sh     # compiles the translator into build/classes
 ```
 
 On Windows use `build.bat` instead of `build.sh`.
 
+Everything it compiles is source code that is already in this repository, so no
+internet connection and no ANTLR install is needed:
+
+| Path | What it is |
+|---|---|
+| `Kotlin2Java.java` | the translator |
+| `Kotlin.g4` | the Kotlin grammar |
+| `generated/` | the parser that ANTLR wrote from `Kotlin.g4` (do not edit by hand) |
+| `antlr-runtime/` | the source of the ANTLR 4 runtime that the parser uses |
+
+**The ANTLR files are downloaded from their official source when you delete what
+comes from ANTLR.** If you would rather not trust the copies kept here, delete
+`antlr-runtime/` or `generated/` and run `build.sh` again:
+
+- `antlr-runtime/` is downloaded again, as source, from ANTLR's official release
+  on [Maven Central](https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/), and
+  compiled here like the rest.
+- `generated/` is written again by the ANTLR tool, which is downloaded from
+  [antlr.org](https://www.antlr.org/download.html) if it is not on this machine
+  already (`ANTLR_JAR`, this directory, `~/.local/lib`, `/usr/local/lib`,
+  `/usr/share/java`). After editing `Kotlin.g4`, delete `generated/` so that it is
+  made again. The tool is only needed for this, never to translate.
+
+Every download is checked against the SHA-256 pinned in `env.sh` (and
+`build.bat`), and the script prints both values and whether they match. A file
+that does not match is deleted and the build stops.
+
+```
+./tests.sh     # translates every input_files/*.kt and runs javac on each result
+./run_tests.sh # runs every program tests.sh produced and prints its output
+```
+
 # How to run?
 
-run the following command in your terminal
+`kotlin2java.sh` (or `kotlin2java.bat` on Windows) runs the translator that
+`build.sh` compiled, from any directory:
+
+```
+./kotlin2java.sh [file].kt [file].java
+```
+
+It is the same as `java -cp build/classes Kotlin2Java ...`, and takes the same
+arguments as the examples below, which leave the `-cp` out:
 
 java Kotlin2Java [file].kt  #creates a default [input.java](http://input.java) file where the code is stored
 
@@ -353,7 +381,7 @@ needed when the code has to live in a Java-only project or toolchain.
 
 # Editor support
 
-`tools/notepad++/` has Kotlin and Gradle support for Notepad++ (syntax highlighting
+`tools/notepadpp-kotlin/` has Kotlin and Gradle support for Notepad++ (syntax highlighting
 and autocompletion), from [bsobol/npp-kotlin-gradle](https://github.com/bsobol/npp-kotlin-gradle)
 under its MIT license, which is kept next to the files.
 
@@ -425,7 +453,10 @@ by Chingis Oinar, whose commits are kept in this history. His project has no
 license: what remains of it here (mostly the grammar, his test inputs and parts of
 this README) is still his, and is not covered by this repository's MIT License.
 
-`tools/notepad++/` is Bartosz Sobol's [npp-kotlin-gradle](https://github.com/bsobol/npp-kotlin-gradle),
+`antlr-runtime/` is the ANTLR 4 runtime by [the ANTLR Project](https://www.antlr.org),
+copied unchanged, under its BSD 3-clause license (`antlr-runtime/LICENSE.txt`).
+
+`tools/notepadpp-kotlin/` is Bartosz Sobol's [npp-kotlin-gradle](https://github.com/bsobol/npp-kotlin-gradle),
 under its own MIT License.
 
 Everything else -- the rewritten translator, the test suite, the scripts and the

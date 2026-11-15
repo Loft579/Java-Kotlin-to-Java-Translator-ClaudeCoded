@@ -1,4 +1,4 @@
-This repository holds the work of three authors, under different terms.
+This repository holds the work of four authors, under different terms.
 
 1. Chingis Oinar (@chingisooinar) -- the original translator, from
    https://github.com/chingisooinar/Kotlin-Basic-Syntax-into-Java-Translator:
@@ -9,11 +9,18 @@ This repository holds the work of three authors, under different terms.
    His project was published without a license. These parts remain his, all
    rights reserved, and are NOT covered by the MIT License below.
 
-2. Bartosz Sobol (@bsobol) -- the files in tools/notepad++/, from
+2. Bartosz Sobol (@bsobol) -- the files in tools/notepadpp-kotlin/, from
    https://github.com/bsobol/npp-kotlin-gradle. They are his, under his own MIT
-   License, in tools/notepad++/LICENSE.md.
+   License, in tools/notepadpp-kotlin/LICENSE.md.
 
-3. Loft579 -- everything else: the changes and additions made in this
+3. The ANTLR Project -- the files in antlr-runtime/, the source of the ANTLR 4
+   runtime, copied unchanged from its official release. They are under ANTLR's
+   BSD 3-clause license, in antlr-runtime/LICENSE.txt.
+
+   generated/ is not theirs: ANTLR writes it mechanically from Kotlin.g4, and it
+   belongs to whoever owns that grammar.
+
+4. Loft579 -- everything else: the changes and additions made in this
    repository, which are licensed under the MIT License below.
 
 --------------------------------------------------------------------------------

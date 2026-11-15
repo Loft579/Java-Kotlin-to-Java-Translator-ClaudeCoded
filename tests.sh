@@ -22,7 +22,7 @@ if [ ! -d "$ROOT/build/classes" ]; then
     exit 1
 fi
 cp -r "$ROOT/build/classes" "$OUT/translator"
-CP="$ANTLR_JAR:$OUT/translator"
+CP="$OUT/translator"          # the ANTLR runtime is compiled in
 
 pass=0; fail=0
 printf '%-14s %-7s %-7s %-7s %s\n' FILE PARSE TRANS JAVAC NOTE
