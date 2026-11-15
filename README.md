@@ -116,8 +116,16 @@ current directory, as with `-e`. The warnings and notes the command line prints 
 left out.
 
 `Kotlin2Java` is in the default package (no `package` line), so it can be used from
-a class that is in the default package too. Compile and run with the classes that
-`build.sh` made on the classpath (`;` instead of `:` on Windows):
+a class that is in the default package too. `run-with-kotlin2java.sh` (or
+`run-with-kotlin2java.bat` on Windows) compiles and runs such a program with the
+translator on the classpath, building the translator first if needed:
+
+```
+/path/to/this/repo/run-with-kotlin2java.sh MyProgram.java [arguments for it]
+```
+
+It is the same as compiling and running with the classes that `build.sh` made on
+the classpath (`;` instead of `:` on Windows):
 
 ```
 javac -cp /path/to/this/repo/build/classes MyProgram.java
