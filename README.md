@@ -37,13 +37,27 @@ comes from ANTLR.** If you would rather not trust the copies kept here, delete
   compiled here like the rest.
 - `generated/` is written again by the ANTLR tool, which is downloaded from
   [antlr.org](https://www.antlr.org/download.html) if it is not on this machine
-  already (`ANTLR_JAR`, this directory, `~/.local/lib`, `/usr/local/lib`,
-  `/usr/share/java`). After editing `Kotlin.g4`, delete `generated/` so that it is
+  already (`ANTLR_JAR`, then this directory; `build.sh` also looks in
+  `~/.local/lib`, `/usr/local/lib` and `/usr/share/java`). After editing `Kotlin.g4`, delete `generated/` so that it is
   made again. The tool is only needed for this, never to translate.
 
 Every download is checked against the SHA-256 pinned in `env.sh` (and
-`build.bat`), and the script prints both values and whether they match. A file
-that does not match is deleted and the build stops.
+`build.bat`), and the script prints both values and whether they match. The copies
+already in the repository are not checked against anything, since there is no
+official SHA-256 for an unpacked or generated copy; the script says so too.
+Nothing is ever deleted:
+
+- A download goes to a `.part` file first, and only takes its place once its
+  SHA-256 matches. If it does not match, the build stops and the `.part` file is
+  kept, unused, for you to look at.
+- An ANTLR jar that is already on this machine is checked too. If it does not
+  match, the build stops and the jar is left as it is.
+- If only part of `antlr-runtime/` or `generated/` is missing, the build stops
+  without touching what is left: delete the whole folder to get it again.
+- With no connection, or with the server down, each download is retried a few
+  times; then the build stops, saying what it could not get, and nothing has
+  changed. You can also download that file yourself and put it where the message
+  says: it is checked and used like a download.
 
 ```
 ./tests.sh     # translates every input_files/*.kt and runs javac on each result
@@ -83,6 +97,32 @@ The generated file is always written as UTF-8, so compile it with that encoding:
 the platform encoding, and a string with an accent in it comes out mangled without
 any error -- on Windows `"café"` compiles to `"cafÃ©"`, four characters becoming
 five. The scripts in this repository already pass the flag.
+
+# Use from Java code
+
+The translator can also be called from a Java program, with no files involved:
+
+```java
+String java = Kotlin2Java.translate("val one = 1");          // a class named Main
+String java = Kotlin2Java.translate(kotlinCode, "Numbers");  // a class named Numbers
+```
+
+It is the same translation as the command line. It reads and writes no files,
+prints nothing, and never exits the program. When the Kotlin cannot be translated
+it throws `Kotlin2Java.TranslationException`, whose `getErrors()` lists every
+problem (syntax errors as `line L:P message`). An invalid class name throws
+`IllegalArgumentException`. An `import` of another `.kt` file is looked up in the
+current directory, as with `-e`. The warnings and notes the command line prints are
+left out.
+
+`Kotlin2Java` is in the default package (no `package` line), so it can be used from
+a class that is in the default package too. Compile and run with the classes that
+`build.sh` made on the classpath (`;` instead of `:` on Windows):
+
+```
+javac -cp /path/to/this/repo/build/classes MyProgram.java
+java -cp /path/to/this/repo/build/classes:. MyProgram
+```
 
 # Example
 
@@ -209,10 +249,20 @@ public class output36 {
 }
 ```
 
-# Result
+# Input's dependencies
 
-![Basic%20Kotlin%20Syntax%20into%20Java%20Converter%208874fdbba36d4862ab592d7582c470d2/Untitled.png](Basic%20Kotlin%20Syntax%20into%20Java%20Converter%208874fdbba36d4862ab592d7582c470d2/Untitled.png)
-# Dependencies
+What happens to a library or file the Kotlin code uses depends on what it is. In
+short: Kotlin source can be **converted** to Java, Kotlin's standard library is
+**mapped** onto its Java equivalent, and Java is **imported** as it is.
+
+| What the code uses | What the translator does |
+| --- | --- |
+| Kotlin's standard library (`Regex`, `kotlin.math`, `println`, ...) | **mapped**: each use is rewritten as the Java that does the same; nothing is translated ([below](#kotlin-stdlib-mapped-not-translated)) |
+| Your own `.kt` files | **converted**: translated to Java as well, by a second run or by `--deps` in the same one ([below](#your-own-code-resolved-on-disk)) |
+| A Kotlin library you have as source | converted like your own `.kt` files, as far as the grammar covers the code it uses |
+| Your own `.java` files | used as they are, compiled alongside the output |
+| Compiled Java libraries (the JDK, `android.jar`, any jar of Java classes) | **imported**: Java calls them as they are; their types are read off the classes so the generated Java declares the right ones ([below](#compiled-libraries-imported-with-their-types-read)) |
+| Compiled Kotlin libraries (a jar built from Kotlin, such as kotlinx) | read like any jar, but what only Kotlin has (`Companion`, extension functions, default arguments) is not mapped yet, so most of them do not work |
 
 ## Kotlin stdlib: mapped, not translated
 

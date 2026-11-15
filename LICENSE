@@ -4,8 +4,7 @@ This repository holds the work of four authors, under different terms.
    https://github.com/chingisooinar/Kotlin-Basic-Syntax-into-Java-Translator:
    the commits he authored, and what remains of his work in the current files,
    mainly the grammar in Kotlin.g4, the test inputs that come from his project,
-   the parts of README.md he wrote, and the folder
-   "Basic Kotlin Syntax into Java Converter 8874fdbba36d4862ab592d7582c470d2".
+   and the parts of README.md he wrote.
    His project was published without a license. These parts remain his, all
    rights reserved, and are NOT covered by the MIT License below.
 

@@ -22,11 +22,13 @@ import org.antlr.v4.runtime.tree.*;
    token stream and the translation carried on silently. This counts both kinds. */
 class Problems extends BaseErrorListener {
 	int count;
+	/** "line L:P message", one per error; whoever runs the parser decides where they go. */
+	final List<String> messages=new ArrayList<String>();
 
 	@Override public void syntaxError(Recognizer<?,?> recognizer,Object offending,int line,
 			int pos,String msg,RecognitionException e){
 		count++;
-		System.err.println("line "+line+":"+pos+" "+msg);
+		messages.add("line "+line+":"+pos+" "+msg);
 	}
 
 	void attach(Lexer lexer,Parser parser){
@@ -508,7 +510,9 @@ class Translator {
 		return owner==null?null:owner.methods.get(member);
 	}
 
-	static void warn(String msg){ System.err.println("warning: "+msg); }
+	/** Collected, not printed: main prints them, translate() leaves them out. */
+	final List<String> warnings=new ArrayList<String>();
+	void warn(String msg){ warnings.add(msg); }
 
 	/** Records a declaration, keeping any earlier one with the same name. */
 	static void register(Map<String,Fn> table,Fn fn){
@@ -1142,6 +1146,7 @@ class Translator {
 			problems.attach(lexer,parser);
 			KotlinParser.ProgContext tree=parser.prog();
 			if(problems.count>0){
+				for(String m:problems.messages)errors.add("dependency '"+f.getName()+"' "+m);
 				errors.add("dependency '"+f.getName()+"' has "+problems.count
 					+" syntax error(s)");
 				return;
@@ -1161,6 +1166,7 @@ class Translator {
 			}
 			depCache.put(key,dep);
 			errors.addAll(dep.errors);
+			warnings.addAll(dep.warnings);
 			notes.addAll(dep.notes);
 			notes.add(emitDeps
 				?"dependency "+f.getName()+" translated as "+cls+".java"
@@ -3847,6 +3853,67 @@ public class Kotlin2Java{
 		return sb.toString();
 	}
 
+	/* ---- use from Java code -----------------------------------------------------
+	 *   String java = Kotlin2Java.translate("val one = 1");            // class Main
+	 *   String java = Kotlin2Java.translate(kotlinSource, "Numbers");  // class Numbers
+	 * The same translation as the command line, minus the files: nothing is read
+	 * or written, nothing is printed, and the program is never exited. */
+
+	/** Thrown by translate() when the Kotlin cannot be translated. */
+	public static class TranslationException extends RuntimeException{
+		private final List<String> errors;
+
+		TranslationException(List<String> errors){
+			super(String.join("\n",errors));
+			this.errors=Collections.unmodifiableList(new ArrayList<String>(errors));
+		}
+
+		/** Every problem found: syntax errors as "line L:P message", then the rest. */
+		public List<String> getErrors(){ return errors; }
+	}
+
+	/** Translates Kotlin source code into a Java class named Main. */
+	public static String translate(String kotlin){
+		return translate(kotlin,"Main");
+	}
+
+	/** Translates Kotlin source code into a Java class with the given name. An import
+	 *  of another .kt file is looked up in the current directory, as with -e. */
+	public static String translate(String kotlin,String className){
+		if(!isClassName(className))
+			throw new IllegalArgumentException("not a valid Java class name: "+className);
+		Translator translator=new Translator(className,new File("."),new HashSet<String>());
+		List<String> problems=new ArrayList<String>();
+		String java=run(CharStreams.fromString(kotlin),translator,problems);
+		if(java==null)problems.add("the input has "+problems.size()+" syntax error(s)");
+		else problems.addAll(translator.errors);
+		if(!problems.isEmpty())throw new TranslationException(problems);
+		return java;
+	}
+
+	static boolean isClassName(String s){
+		if(s==null||s.isEmpty()||!Character.isJavaIdentifierStart(s.charAt(0)))return false;
+		for(char c:s.toCharArray())if(!Character.isJavaIdentifierPart(c))return false;
+		return !Translator.JAVA_KEYWORDS.contains(s);
+	}
+
+	/** Parses and translates, the one path both main and translate() take. Returns
+	 *  the Java code, or null with the syntax errors added to syntaxErrors; any
+	 *  other problem is left in translator.errors. */
+	static String run(CharStream source,Translator translator,List<String> syntaxErrors){
+		KotlinLexer lexer=new KotlinLexer(source);
+		KotlinParser parser=new KotlinParser(new CommonTokenStream(lexer));
+		Problems problems=new Problems();
+		problems.attach(lexer,parser);
+		KotlinParser.ProgContext tree=parser.prog();
+		if(problems.count>0){
+			syntaxErrors.addAll(problems.messages);
+			return null;
+		}
+		translator.collect(tree);
+		return translator.translate(tree);
+	}
+
 	public static void main(String[] rawArgs) throws IOException{
 		boolean emitDeps=false;
 		List<File> classpath=new ArrayList<File>();
@@ -3901,17 +3968,6 @@ public class Kotlin2Java{
 			file=(args.length>=2)?args[1]:"input.java";
 		}
 
-		KotlinLexer lexer=new KotlinLexer(source);
-		KotlinParser parser=new KotlinParser(new CommonTokenStream(lexer));
-		Problems problems=new Problems();
-		problems.attach(lexer,parser);
-		KotlinParser.ProgContext tree=parser.prog();
-		if(problems.count>0){
-			System.err.println("the input has "+problems.count
-				+" syntax error(s); no output generated");
-			System.exit(1);
-		}
-
 		File baseDir=args[0].equals("-")||args[0].equals("-e")
 			?new File(".")
 			:new File(args[0]).getAbsoluteFile().getParentFile();
@@ -3945,8 +4001,15 @@ public class Kotlin2Java{
 				System.exit(1);
 			}
 		}
-		translator.collect(tree);
-		String java=translator.translate(tree);
+		List<String> syntaxErrors=new ArrayList<String>();
+		String java=run(source,translator,syntaxErrors);
+		if(java==null){
+			for(String m:syntaxErrors)System.err.println(m);
+			System.err.println("the input has "+syntaxErrors.size()
+				+" syntax error(s); no output generated");
+			System.exit(1);
+		}
+		for(String w:translator.warnings)System.err.println("warning: "+w);
 		for(String n:translator.notes)System.err.println("note: "+n);
 		if(!translator.errors.isEmpty()){
 			for(String e:translator.errors)System.err.println("error: "+e);
