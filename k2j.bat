@@ -1,6 +1,6 @@
 @echo off
 rem Runs the translator that build.bat compiled; takes the same arguments as Kotlin2Java:
-rem   kotlin2java.bat input.kt Output.java
+rem   k2j.bat input.kt Output.java
 rem Files are read and written relative to the directory it is run from.
 setlocal
 set "ROOT=%~dp0"

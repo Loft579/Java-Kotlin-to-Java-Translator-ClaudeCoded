@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared by build.sh, tests.sh, run_tests.sh and kotlin2java.sh: finds the JDK and
+# Shared by build.sh, tests.sh, run_tests.sh and k2j.sh: finds the JDK and
 # exports JAVA_BIN, and defines what build.sh needs to fetch the ANTLR parts it is
 # missing. Sourcing it downloads nothing; build.sh decides when that is needed.
 #

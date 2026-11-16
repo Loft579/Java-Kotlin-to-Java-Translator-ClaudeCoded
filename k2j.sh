@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the translator that build.sh compiled; takes the same arguments as Kotlin2Java:
-#   ./kotlin2java.sh input.kt Output.java
-#   ./kotlin2java.sh -e 'fun main() { println("hi") }'
+#   ./k2j.sh input.kt Output.java
+#   ./k2j.sh -e 'fun main() { println("hi") }'
 # Files are read and written relative to the directory it is run from.
 set -euo pipefail
 

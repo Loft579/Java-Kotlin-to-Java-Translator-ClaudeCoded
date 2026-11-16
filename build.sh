@@ -146,4 +146,4 @@ if ! swap; then
     fi
 fi
 
-echo "ok. To translate:  ./kotlin2java.sh input.kt Output.java"
+echo "ok. To translate:  ./k2j.sh input.kt Output.java"

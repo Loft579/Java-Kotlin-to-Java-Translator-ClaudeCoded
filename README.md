@@ -66,11 +66,11 @@ Nothing is ever deleted:
 
 # How to run?
 
-`kotlin2java.sh` (or `kotlin2java.bat` on Windows) runs the translator that
+`k2j.sh` (or `k2j.bat` on Windows) runs the translator that
 `build.sh` compiled, from any directory:
 
 ```
-./kotlin2java.sh [file].kt [file].java
+./k2j.sh [file].kt [file].java
 ```
 
 It is the same as `java -cp build/classes Kotlin2Java ...`, and takes the same
@@ -116,16 +116,8 @@ current directory, as with `-e`. The warnings and notes the command line prints 
 left out.
 
 `Kotlin2Java` is in the default package (no `package` line), so it can be used from
-a class that is in the default package too. `run-with-kotlin2java.sh` (or
-`run-with-kotlin2java.bat` on Windows) compiles and runs such a program with the
-translator on the classpath, building the translator first if needed:
-
-```
-/path/to/this/repo/run-with-kotlin2java.sh MyProgram.java [arguments for it]
-```
-
-It is the same as compiling and running with the classes that `build.sh` made on
-the classpath (`;` instead of `:` on Windows):
+a class that is in the default package too. Compile and run it with the classes
+that `build.sh` made on the classpath (`;` instead of `:` on Windows):
 
 ```
 javac -cp /path/to/this/repo/build/classes MyProgram.java

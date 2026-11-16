@@ -203,7 +203,7 @@ echo and run build.bat again.>&2
 goto :fail
 :swapped
 
-echo ok. To translate:  kotlin2java.bat input.kt Output.java
+echo ok. To translate:  k2j.bat input.kt Output.java
 endlocal
 exit /b 0
 
